@@ -21,6 +21,7 @@ package org.apache.fontbox.ttf.advanced.scripts;
 
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.WeakHashMap;
 import java.util.Map;
 
 import org.apache.fontbox.ttf.advanced.AdvancedTypographicTable;
@@ -35,7 +36,7 @@ import org.apache.fontbox.ttf.advanced.util.ScriptContextTester;
 
 /**
  * <p>Abstract script processor base class for which an implementation of the substitution and positioning methods
- * must be supplied.</p>
+ * must be supplied. Not thread-safe.</p>
  *
  * <p>This work was originally authored by Glenn Adams (gadams@apache.org).</p>
  */
@@ -44,7 +45,7 @@ public abstract class ScriptProcessor {
 
     private final String script;
 
-    private final Map/*<AssembledLookupsKey,AdvancedTypographicTable.UseSpec[]>*/ assembledLookups;
+    private final Map<AdvancedTypographicTable, AssembledLookupsForTable> assembledLookups;
 
     private static Map<String, ScriptProcessor> processors = new HashMap<String, ScriptProcessor>();
 
@@ -57,7 +58,7 @@ public abstract class ScriptProcessor {
             throw new IllegalArgumentException("script must be non-empty string");
         } else {
             this.script = script;
-            this.assembledLookups = new HashMap/*<AssembledLookupsKey,AdvancedTypographicTable.UseSpec[]>*/();
+            this.assembledLookups = new WeakHashMap<AdvancedTypographicTable, AssembledLookupsForTable> ();
         }
     }
 
@@ -208,21 +209,30 @@ public abstract class ScriptProcessor {
      * @return ordered array of assembled lookup table use specifications
      */
     public final AdvancedTypographicTable.UseSpec[] assembleLookups(AdvancedTypographicTable table, String[] features, Map/*<LookupSpec,List<LookupTable>>*/ lookups) {
-        AssembledLookupsKey key = new AssembledLookupsKey(table, features, lookups);
+        AssembledLookupsKey key = new AssembledLookupsKey(features, lookups);
         AdvancedTypographicTable.UseSpec[] usa;
-        if ((usa = assembledLookupsGet(key)) != null) {
+        if ((usa = assembledLookupsGet(table, key)) != null) {
             return usa;
         } else {
-            return assembledLookupsPut(key, table.assembleLookups(features, lookups));
+            return assembledLookupsPut(table, key, table.assembleLookups(features, lookups));
         }
     }
 
-    private AdvancedTypographicTable.UseSpec[] assembledLookupsGet(AssembledLookupsKey key) {
-        return (AdvancedTypographicTable.UseSpec[]) assembledLookups.get(key);
+    private AdvancedTypographicTable.UseSpec[] assembledLookupsGet(AdvancedTypographicTable table, AssembledLookupsKey key) {
+        AssembledLookupsForTable forTable = assembledLookups.get(table);
+        if (forTable == null) {
+            return null;
+        }
+        return forTable.get(key);
     }
 
-    private AdvancedTypographicTable.UseSpec[]  assembledLookupsPut(AssembledLookupsKey key, AdvancedTypographicTable.UseSpec[] usa) {
-        assembledLookups.put(key, usa);
+    private AdvancedTypographicTable.UseSpec[] assembledLookupsPut(AdvancedTypographicTable table, AssembledLookupsKey key, AdvancedTypographicTable.UseSpec[] usa) {
+        AssembledLookupsForTable forTable = assembledLookups.get(table);
+        if (forTable == null) {
+            forTable = new AssembledLookupsForTable();
+            assembledLookups.put(table, forTable);
+        }
+        forTable.put(key, usa);
         return usa;
     }
 
@@ -254,14 +264,29 @@ public abstract class ScriptProcessor {
         return sp;
     }
 
+    private static class AssembledLookupsForTable {
+        private final Map<AssembledLookupsKey, AdvancedTypographicTable.UseSpec[]> assembledLookups;
+
+        protected AssembledLookupsForTable() {
+            assembledLookups = new HashMap<AssembledLookupsKey, AdvancedTypographicTable.UseSpec[]>();
+        }
+
+        public AdvancedTypographicTable.UseSpec[] get(AssembledLookupsKey key) {
+            return (AdvancedTypographicTable.UseSpec[]) assembledLookups.get(key);
+        }
+
+        public AdvancedTypographicTable.UseSpec[] put(AssembledLookupsKey key, AdvancedTypographicTable.UseSpec[] usa) {
+            assembledLookups.put(key, usa);
+            return usa;
+        }
+    }
+
     private static class AssembledLookupsKey {
 
-        private final AdvancedTypographicTable table;
         private final String[] features;
         private final Map/*<LookupSpec,List<LookupTable>>*/ lookups;
 
-        AssembledLookupsKey(AdvancedTypographicTable table, String[] features, Map/*<LookupSpec,List<LookupTable>>*/ lookups) {
-            this.table = table;
+        AssembledLookupsKey(String[] features, Map/*<LookupSpec,List<LookupTable>>*/ lookups) {
             this.features = features;
             this.lookups = lookups;
         }
@@ -269,8 +294,7 @@ public abstract class ScriptProcessor {
         /** {@inheritDoc} */
         public int hashCode() {
             int hc = 0;
-            hc =  7 * hc + (hc ^ table.hashCode());
-            hc = 11 * hc + (hc ^ Arrays.hashCode(features));
+            hc = 7 * hc + (hc ^ Arrays.hashCode(features));
             hc = 17 * hc + (hc ^ lookups.hashCode());
             return hc;
         }
@@ -279,9 +303,7 @@ public abstract class ScriptProcessor {
         public boolean equals(Object o) {
             if (o instanceof AssembledLookupsKey) {
                 AssembledLookupsKey k = (AssembledLookupsKey) o;
-                if (!table.equals(k.table)) {
-                    return false;
-                } else if (!Arrays.equals(features, k.features)) {
+                if (!Arrays.equals(features, k.features)) {
                     return false;
                 } else {
                     return lookups.equals(k.lookups);
